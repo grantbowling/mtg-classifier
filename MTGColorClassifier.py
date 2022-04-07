@@ -81,6 +81,55 @@ def clean_dataset(df):
     df.dropna(inplace=True)
     indices_to_keep = ~df.isin([np.nan, np.inf, -np.inf]).any(1)
     return df[indices_to_keep].astype(np.float64)
+
+def make_oracle_dict(row):
+    orac_list = row['oracle_text'].split()
+    bag = {}
+    for word in orac_list:
+        if (not word in bag):
+            bag[word] = 1
+        else:
+            bag[word] += 1
+    return bag
+
+def oracle_feats(row, abis):
+    for ability in abis:
+        for abil_word in ability:
+            if (not abil_word in row['oracle_text']):
+                return 0.0
+    return 1.0
+
+def subtract_keyw(row, keyw_valid):
+    for keyw in keyw_valid:
+        keyw_l = keyw.split()
+        if (len(keyw_l) == 1):
+            if (row["has_" + keyw] == 1):
+                if (keyw == 'Mill'):
+                    try:
+                        row['oracle_text'][keyw_l[0].lower() + 's'] -= 1
+                    except:
+                        continue
+                elif(keyw == 'Fight' or keyw == 'Explore'):
+                    try:
+                        row['oracle_text'][keyw_l[0].lower() + 's'] -= 1
+                    except:
+                        row['oracle_text'][keyw_l[0].lower()] -= 1
+                elif(keyw == 'Landwalk'):
+                    continue
+                else:
+                        row['oracle_text'][keyw_l[0].lower()] -= 1
+                if(keyw_l[0].lower() in row['oracle_text'] and row['oracle_text'][keyw_l[0].lower()] == 0):
+                        row['oracle_text'].pop(keyw_l[0].lower())
+                elif(keyw_l[0].lower()+'s' in row['oracle_text'] and row['oracle_text'][keyw_l[0].lower() + 's'] == 0):
+                        row['oracle_text'].pop(keyw_l[0].lower() + 's')
+        elif (len(keyw_l) == 2):
+            if (row["has_" + keyw] == 1):
+                row['oracle_text'][keyw_l[0].lower()] -= 1
+                row['oracle_text'][keyw_l[1].lower()] -= 1
+                if(row['oracle_text'][keyw_l[0].lower()] == 0):
+                    row['oracle_text'].pop(keyw_l[0].lower())
+                if(row['oracle_text'][keyw_l[1].lower()] == 0):
+                    row['oracle_text'].pop(keyw_l[1].lower())
         
 
 if __name__ == '__main__':
@@ -132,32 +181,6 @@ if __name__ == '__main__':
     df['pt_ratio'] = df['power']/ df['toughness']
     df['p+t/cmc'] = (df['power'] + df['toughness']) / df['cmc']
     
-    #add oracle text list for bag-of-words
-    df['oracle_text'] = df['oracle_text'].str.lower()
-    df['oracle_text'] = df['oracle_text'].str.replace(':','', regex=False)
-    df['oracle_text'] = df['oracle_text'].str.replace('.','', regex=False)
-    df['oracle_text'] = df['oracle_text'].str.replace(',','', regex=False)
-    df['oracle_text'] = df['oracle_text'].str.replace('\n',' ', regex=False)
-    df['oracle_text'] = df['oracle_text'].str.replace("\(.*?\)",'', regex=True)
-    df['oracle_text'] = df['oracle_text'].str.replace("\{.*?\}",'', regex=True)
-    df['oracle_text'] = df['oracle_text'].str.split()
-    
-    #add column of length of Oracle text and drop text
-    df['oracle_length'] = df.apply(orac_len, axis=1)
-    
-    
-    #delete the rest of the extra columns not needed for modeling
-    for col in ['object','type_line', 'legalities', 'set_name', 'oracle_id','oracle_text']:
-        df.drop(col, axis = 1, inplace=True)
-    
-    # print(df.head())
-    # print(df['oracle_text'])
-    # print(df['oracle_text'][12])
-    # print(df['oracle_text'][25023])
-    
-    #TODO: turn the list (into bag of words?) into features using color pie website
-    #TODO: download new cards from scryfall!
-    
     #finding the most common keywords to one-hot encode 
     
     key_dict = {}
@@ -175,19 +198,65 @@ if __name__ == '__main__':
         sorted_dict[w] = key_dict[w]
     
     #storing in keyw_valid after deciding cutoff  
-    keyw_valid = []
+    valids = []
     for keys in sorted_dict.keys():
         if (sorted_dict[keys] > 10):
-            keyw_valid.append(keys)
+            valids.append(keys)
+            
     #one-hot encoding the keys in keyw_valid
     col_add = []
-    for keys in keyw_valid:
+    for keys in valids:
         df['has_' + keys] = df.apply(has_keyw, axis =1, keyword = keys)
         col_add.append('has_' + keys)
         
     for col in col_add:
         df[col] = df[col].astype(int)
     df.drop("keywords", axis=1, inplace=True)
+    
+    #clean up the oracle text list for bag-of-words
+    df['oracle_text'] = df['oracle_text'].str.lower()
+    df['oracle_text'] = df['oracle_text'].str.replace(':','', regex=False)
+    df['oracle_text'] = df['oracle_text'].str.replace('.','', regex=False)
+    df['oracle_text'] = df['oracle_text'].str.replace(',','', regex=False)
+    df['oracle_text'] = df['oracle_text'].str.replace('—',' ', regex=False)
+    df['oracle_text'] = df['oracle_text'].str.replace(';',' ', regex=False)
+    df['oracle_text'] = df['oracle_text'].str.replace('\n',' ', regex=False)
+    df['oracle_text'] = df['oracle_text'].str.replace("\(.*?\)",'', regex=True)
+    df['oracle_text'] = df['oracle_text'].str.replace("\{.*?\}",'', regex=True)
+    
+    #add column of length of Oracle text and drop text
+    df['oracle_length'] = df.apply(orac_len, axis=1)
+    
+    df['oracle_text'] = df.apply(make_oracle_dict, axis=1)
+    
+    df.apply(subtract_keyw, axis=1, keyw_valid=valids)
+    
+    abilities_list = [['+1/+1', 'counter'], ['+1/+1', 'counters'], ['becomes', 'enchantment', 'creature'], ['exile', 'target'], ['can\'t', 'attack'], ['can\'t', 'lose'], ['can\'t', 'win'], ['+0/+x'], ['+0/+1'], 
+                      ['+0/+2'], ['+0/+3'], ['+1/+1', 'all'], ['+2/+2', 'all'], ['+3/+3', 'all'], ['prevent'], ['attacking', 'damage'], ['blocking', 'damage'], ['destroy', 'enchantment'], ['gain', 'like'],
+                      ['return', 'battlefield'], ['tap'], ['token'], ['becomes', 'enchantment', 'creature'], ['can\'t', 'blocked'], ['draw'], ['look'], ['counter'], ['copy'], ['+x/-x'], ['+1/-1'], ['+2/-2'],
+                      ['-x/+x'], ['-1/+1'], ['-2/+2'], ['-x/-0'], ['-1/-0'], ['-2/-0'], ['-3/-0'], ['doesn\'t', 'untap'], ['cast', 'instant'], ['cast', 'sorcery'], ['top'], ['instant', 'graveyard'], ['sorcery', 'graveyard'],
+                      ['return', 'owners', 'hand'], ['scry'], ['gain', 'control'], ['extra', 'turn'], ['untap'], ['can\'t', 'block'], ['cast', 'graveyard'], ['sacrifice', 'creature'], ['detroy', 'target', 'creature'], ['+x/+x'], 
+                      ['+1/+1'], ['+2/+2'], ['+3/+3'], ['+4/+4'], ['-1/-1'], ['-2/-2'], ['-3/-3'], ['-4/-4'], ['-x/-x'], ['discard'], ['loses', 'life'], ['lose', 'life'], ['dies'], ['remove', 'counters'], ['sacrifice', 'artifact'],
+                      ['destroy', 'artifact'], ['basic', 'lands'], ['can\'t', 'countered'], ['+x/+0'], ['+1/+0'], ['+2/+0'], ['+3/+0'], ['deal', 'damage'], ['deal', 'damage', 'blocked'], ['deal', 'damage', 'sacrifice'], ['additional', 'combat'],
+                      ['must', 'attack'], ['discard', 'draw'], ['treasure'], ['equal', 'power'], ['flying', 'damage'], ['flying', 'destroy'], ['enchatment', 'draw'], ['power', 'draw'], ['must', 'block'], ['land', 'battlefield'], ['untap', 'lands']]
+    
+    for abil in abilities_list:
+        abil_str = '_'.join(abil)
+        df[abil_str] = df.apply(oracle_feats, axis=1, abis = abil)
+    
+    
+    
+    #delete the rest of the extra columns not needed for modeling
+    for col in ['object','type_line', 'legalities', 'set_name', 'oracle_id','oracle_text']:
+        df.drop(col, axis = 1, inplace=True)
+    
+    # print(df.head())
+    # print(df['oracle_text'])
+    # print(df['oracle_text'][12])
+    # print(df['oracle_text'][25023])
+    
+    #TODO: turn the bags of words? into features using color pie website
+    
         
     i = list(df.columns)
     a, b = i.index("cmc"), i.index("colors")
@@ -212,7 +281,8 @@ if __name__ == '__main__':
     y = new_df['colors'].astype(str)
     x = new_df.drop('colors', axis =1 , inplace=False)
     
-    print(x)
+    print(len(x.columns))
+    print(x.head())
     
     color_dict = {}
     for i in y:
@@ -222,8 +292,7 @@ if __name__ == '__main__':
             color_dict[i] += 1
     
     #build model
-    model = RandomForestClassifier(max_depth = 17, n_estimators=1000)
-    #TODO: out of bag?
+    model = RandomForestClassifier(max_depth = 18, n_estimators=1000)
     model.fit(x,y)
     
     #evaluate model
